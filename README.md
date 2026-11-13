@@ -147,9 +147,10 @@ Build order (MATH_SPEC.md §10):
 - **Done:** steps 1–3, 5 and 6. Step 4 is done except for the optional custom backward of §5, whose reference
   sweep lives in `tests/test_math_spec.py::sec_adjoint`.
 - Step 5 is `examples/su3_single_variable_flow.py`, the §7 run (`python examples/su3_single_variable_flow.py`;
-  options `--steps`, `--seed`, `--batch`). With its defaults (seed 0, batch 1024, 350 Adam steps, 378 s of
-  training on 6 CPU threads) it reaches ESS 99.96 % on both sets of 32,768 samples, log Z = 1.23602 ± 0.00011
-  and 1.23588 ± 0.00011 (exact 1.23589), all det J > 0 and max ‖Dω‖₂ = 0.31. The default suite runs only
-  `tests/test_example_smoke.py`; set `LAG_FULL_FLOW=1` to include the full run.
+  options `--steps`, `--seed`, `--batch`). With its defaults (seed 0, batch 1024, 350 Adam steps, about 5 to
+  6 minutes of training on 6 CPU threads) it reaches ESS 99.96 % on both sets of 32,768 samples,
+  log Z = 1.23602 ± 0.00011 and 1.23588 ± 0.00011 (exact 1.23589), all det J > 0 and max ‖Dω‖₂ = 0.31. These
+  numbers are identical on torch 2.11 and 2.14.1, before and after the `su3_exp` fallback. The default suite
+  runs only `tests/test_example_smoke.py`; set `LAG_FULL_FLOW=1` to include the full run.
 
 The open items of §9 are unchanged.
