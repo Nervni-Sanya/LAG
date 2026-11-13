@@ -96,20 +96,33 @@ python tests/test_math_spec.py
 
 ## Differences from the reference implementation
 
-### `su3_exp` gradient guard
+### `su3_exp`: `matrix_exp` fallback near degeneracy and zero
 
-On torch 2.11 the unmodified reference fails one check: `grad through su3 closed form: non-finite count` is 7
-of 100. At exactly degenerate eigenvalues `c0/(2s³)` rounds to exactly ±1, and there `arccos' = ∞` meets a
-zero upstream gradient. In a stress test with exactly degenerate inputs, about half of the reference's
-gradients are NaN.
+The reference's derivatives depend on the torch version at exactly degenerate eigenvalues. There `c0/(2s³)`
+can round to exactly ±1, and `arccos' = ∞` then meets a zero upstream gradient. On torch 2.11 the unmodified
+reference fails one check (`grad through su3 closed form: non-finite count` is 7 of 100), and 14 of 300
+exactly degenerate inputs give NaN first derivatives. On torch 2.14.1 both counts are 0. Second derivatives
+at those inputs are NaN in about 57 % of cases on both versions.
 
-`lag.exp.su3_exp` now evaluates `arccos(clamp(·))` with a small custom autograd function. Its first
-derivative is 0 where `|cos 3φ| ≥ 1`, which is the exact limit there. Elsewhere it is the reference's. As a
-result:
-- forward values are bit-for-bit unchanged;
-- first derivatives are exact, with a worst error of 5.5e-10 over the 100 stress cases (tolerance 1e-8);
-- second derivatives at degenerate X are NaN, as in the reference. They are not supported, and never come out
-  finite and wrong. Use `torch.linalg.matrix_exp` if you need Hessians there.
+`lag.exp.su3_exp` keeps the closed form for generic elements and sends the rest to `torch.linalg.matrix_exp`,
+which is smooth to every order. "The rest" means near-zero elements (`c1 < 1e-12`) and near-degenerate ones
+(`1 − |cos 3φ| ≤ 1e-6`, a relative eigenvalue gap below about 1.6e-3). The routing mask is computed without
+gradient. The reference's Taylor branch and clamp are no longer used. Measured on torch 2.11 and 2.14.1:
+- forward values and gradients on generic inputs are bit-for-bit those of the reference (batched input), and
+  none of 4,000 random elements is routed to `matrix_exp`;
+- first and second derivatives are finite everywhere. Over 300 exactly degenerate inputs, Hessian-vector
+  products equal those of `matrix_exp`, and across eigenvalue gaps from 1e-1 to 0 the worst relative
+  Hessian error is 3.8e-12;
+- it is faster than the previous version. On torch 2.11 with 6 CPU threads, 16,384 matrices take 24 ms
+  forward plus backward (previously 35 ms; `matrix_exp` 67 ms), and 61 ms with a double backward (previously
+  84 ms; `matrix_exp` 268 ms). torch 2.14.1 gives 25 ms and 64 ms.
+
+Consequences:
+- Three §8 checks (`exp su3 closed: norm x1e-7`, `exp su3 closed: degenerate eigenvalues`,
+  `grad through su3 closed form at X = 0`) now exercise the `matrix_exp` fallback rather than the closed form,
+  so they record 0.
+- The routing is data-dependent control flow, so `torch.func.vmap` cannot wrap `su3_exp`, and
+  `torch.compile` traces it with a graph break.
 
 ### `MatrixLieGroup` (from `lag_proto.py`)
 

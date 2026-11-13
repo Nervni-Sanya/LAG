@@ -1,8 +1,8 @@
 """Tests of the closed-form exponentials of lag.exp against torch.linalg.matrix_exp (MATH_SPEC.md section 2).
 
-Covers su3_exp across norm scales, its first derivatives at exactly degenerate X (the gradient guard) and its
-second derivatives (correct at generic X, NaN rather than silently wrong at degenerate X), and
-so3_exp / su2_exp / se3_exp around the series / closed-form switch (th^2 = 0.25) and at large angles.
+Covers su3_exp across norm scales and its first and second derivatives at generic, near-degenerate, exactly
+degenerate and zero X (where the matrix_exp fallback takes over), and so3_exp / su2_exp / se3_exp around the
+series / closed-form switch (th^2 = 0.25) and at large angles.
 All tensors are float64 / complex128 with explicit dtypes; every test is seeded with a local generator.
 """
 from __future__ import annotations
@@ -39,8 +39,8 @@ def test_su3_exp_vs_matrix_exp_norm_scales(scale):
     """Batch of random su(3) elements of Frobenius norm exactly `scale`.
 
     Tolerance 1e-14: the measured error of the unmutated code is <= 2e-15 at every scale (a few ulp of
-    matrix_exp itself), so 1e-14 leaves a factor 5 of margin. A Taylor cutoff that is too large
-    (taylor_cut = 1e-3, K = 4 terms) has truncation error ~ scale^5 / 120 ~ 1e-12 at scale 1e-2 and is caught.
+    matrix_exp itself), so 1e-14 leaves a factor 5 of margin. These random elements are generic, so they take
+    the closed-form path: this checks the closed form itself across four decades of norm.
     """
     w = _randn(200, 8, seed=1)
     X = su_hat(w, T3)
@@ -69,12 +69,12 @@ def _grad(f, X: Tensor, Cw: Tensor) -> Tensor:
 
 @pytest.mark.parametrize("sign", [+1, -1])
 def test_su3_exp_gradient_at_exactly_degenerate_X(sign):
-    """X = g diag(i a, i a, -2 i a) g^H: two equal eigenvalues, cos(3 phi) = -sign (+-1 after clamping).
+    """X = g diag(i a, i a, -2 i a) g^H: two equal eigenvalues, cos(3 phi) = -sign up to rounding.
 
     The gradient of Re sum(E * C) through su3_exp must be finite and equal to the one through matrix_exp,
-    both projected onto su(3) (su3_exp is only specified on su(3)). The measured difference of the unmutated
-    code is <= 4e-15, tolerance 1e-12 (the gradients are O(1)). Without the guard arccos'(+-1) = inf times a
-    zero upstream gradient gives NaN in the cases where the clamp is hit exactly; the case g = 1 always is.
+    both projected onto su(3) (su3_exp is only specified on su(3)); tolerance 1e-12 (the gradients are O(1)).
+    These elements go to the matrix_exp fallback. The reference closed form gives NaN here (arccos'(+-1) = inf
+    times a zero upstream gradient) whenever the clamp is hit exactly, which the case g = 1 always is.
     """
     cases = [torch.eye(3, dtype=C128)] + [_rand_su3_element(100 + i) for i in range(40)]
     assert len(cases) >= 20
@@ -114,26 +114,58 @@ def test_su3_exp_hessian_generic_matches_matrix_exp():
 
 
 @pytest.mark.parametrize("sign", [+1, -1])
-def test_su3_exp_hessian_at_degenerate_X_is_nan_or_correct(sign):
-    """Second derivatives at exactly degenerate X are unsupported (su3_exp docstring): they must come out NaN, as
-    in the reference lagmath.py, never as a finite wrong number. Finite cases are near-degenerate after rounding and
-    match matrix_exp to <= 3.5e-8 (eigenvalue-gap amplification); tolerance 1e-6. A guard that merely detaches the
-    arccos path gives finite errors up to ~2 here and fails."""
+def test_su3_exp_hessian_at_degenerate_X_matches_matrix_exp(sign):
+    """At exactly degenerate X = g diag(i a, i a, -2 i a) g^H (random g in SU(3), both signs of cos 3 phi) su3_exp
+    falls back to matrix_exp, so Hessian-vector products are finite and equal to those through matrix_exp;
+    tolerance 1e-12. Before the fallback they were NaN in about half of these cases (23 of 41 per sign), and a
+    guard that merely detaches the arccos path gave finite errors up to ~2 here."""
     gen = _gen(13)
     cases = [torch.eye(3, dtype=C128)] + [_rand_su3_element(300 + i) for i in range(40)]
-    nan_cases = 0
     for i, g in enumerate(cases):
         a = sign * (0.4 + 0.05 * i)
         X = g @ torch.diag(torch.tensor([1j * a, 1j * a, -2j * a], dtype=C128)) @ g.mH
         Cw = torch.randn(3, 3, generator=gen, dtype=C128)
         V = proj_su(torch.randn(3, 3, generator=gen, dtype=C128))
         h = _hvp(su3_exp, X, Cw, V)
-        if not torch.isfinite(h).all():
-            nan_cases += 1
-            continue
+        assert torch.isfinite(h).all(), f"case {i}, a = {a}: non-finite Hessian-vector product"
         err = float((h - _hvp(mexp, X, Cw, V)).abs().max())
-        assert err < 1e-6, f"case {i}, a = {a}: finite but wrong Hessian-vector product (error {err:.3e})"
-    assert nan_cases >= 1, "g = 1 hits |cos 3 phi| = 1 exactly; the unsupported case must be reported as NaN"
+        assert err < 1e-12, f"case {i}, a = {a}: Hessian-vector product differs from matrix_exp by {err:.3e}"
+
+
+def test_su3_exp_gradgradcheck_including_degenerate():
+    """Finite-difference first and second derivatives (gradcheck, gradgradcheck) at generic, near-degenerate
+    (gap 1e-4), exactly degenerate (1.7 T_8) and zero inputs. From the reviewed fallback patch."""
+    f = lambda w: torch.view_as_real(su3_exp(su_hat(w, T3)))
+    gen = _gen(0)
+    points = [torch.randn(8, generator=gen, dtype=F64),
+              torch.tensor([0, 0, 1e-4, 0, 0, 0, 0, 1.7], dtype=F64),
+              torch.tensor([0, 0, 0, 0, 0, 0, 0, 1.7], dtype=F64),
+              torch.zeros(8, dtype=F64)]
+    for w0 in points:
+        w = w0.clone().requires_grad_(True)
+        assert torch.autograd.gradcheck(f, (w,), eps=1e-6, atol=1e-6, rtol=1e-5)
+        assert torch.autograd.gradgradcheck(f, (w,), eps=1e-6, atol=1e-5, rtol=1e-4)
+
+
+def test_su3_exp_hessian_finite_at_every_gap():
+    """Hessian-vector products against matrix_exp for eigenvalue gaps from 1e-1 down to exactly 0: never NaN,
+    relative error below 1e-9. From the reviewed fallback patch."""
+    gen = _gen(1)
+
+    def hvp(expf, w, Cw, v):
+        w = w.clone().requires_grad_(True)
+        g = torch.autograd.grad((expf(su_hat(w, T3)) * Cw).sum().real, w, create_graph=True)[0]
+        return torch.autograd.grad((g * v).sum(), w)[0]
+    for gap in (1e-1, 1e-3, 1e-5, 1e-7, 1e-8, 1e-10, 0.0):
+        for _ in range(10):
+            w = torch.zeros(8, dtype=F64)
+            w[7] = 1.7
+            w[2] = gap
+            Cw = torch.randn(3, 3, generator=gen, dtype=C128)
+            v = torch.randn(8, generator=gen, dtype=F64)
+            ha, hm = hvp(su3_exp, w, Cw, v), hvp(mexp, w, Cw, v)
+            assert torch.isfinite(ha).all(), f"gap {gap}: non-finite Hessian-vector product"
+            assert float((ha - hm).abs().max() / hm.abs().max()) < 1e-9, f"gap {gap}"
 
 
 # ---------------------------------------------------------------------------------------------

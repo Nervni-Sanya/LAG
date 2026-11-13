@@ -96,85 +96,62 @@ def se3_exp(xi: Tensor) -> Tensor:
     return torch.cat([top, bot], -2)
 
 
-class _ArccosClamped(torch.autograd.Function):
-    """arccos(clamp(x, -1, 1)) with a finite first derivative at |x| >= 1 (helper of su3_exp).
+def _su3_closed(Q: Tensor) -> Tensor:
+    """exp(iQ) for Hermitian traceless Q (..., 3, 3) with a well-separated spectrum; MATH_SPEC section 2.4.
 
-    First derivative: arccos'(x) for |x| < 1 and 0 for |x| >= 1; the reference (torch.arccos of torch.clamp)
-    gives 0 outside [-1, 1] and NaN at exactly +-1. Second derivative: that of arccos for |x| < 1 and NaN for
-    |x| >= 1, as in the reference (unsupported there).
-    """
-
-    @staticmethod
-    def forward(ctx: torch.autograd.function.FunctionCtx, x: Tensor) -> Tensor:
-        ctx.save_for_backward(x)
-        return torch.arccos(torch.clamp(x, -1.0, 1.0))
-
-    @staticmethod
-    def backward(ctx: torch.autograd.function.FunctionCtx, g: Tensor) -> Tensor:
-        (x,) = ctx.saved_tensors
-        return g * _DArccosClamped.apply(x)
-
-
-class _DArccosClamped(torch.autograd.Function):
-    """Derivative of _ArccosClamped: -1/sqrt(1 - x^2) for |x| < 1, 0 for |x| >= 1; its derivative is NaN there."""
-
-    @staticmethod
-    def forward(ctx: torch.autograd.function.FunctionCtx, x: Tensor) -> Tensor:
-        ctx.save_for_backward(x)
-        edge = x.abs() >= 1.0
-        safe = torch.where(edge, torch.zeros_like(x), x)
-        return torch.where(edge, torch.zeros_like(x), -((-safe * safe + 1).rsqrt()))
-
-    @staticmethod
-    def backward(ctx: torch.autograd.function.FunctionCtx, g: Tensor) -> Tensor:
-        (x,) = ctx.saved_tensors
-        edge = x.abs() >= 1.0
-        safe = torch.where(edge, torch.zeros_like(x), x)
-        return g * torch.where(edge, torch.full_like(x, float("nan")), -safe * (-safe * safe + 1) ** -1.5)
-
-
-_arccos_clamped = _ArccosClamped.apply
-
-
-def su3_exp(X: Tensor, taylor_cut: float = 1e-12, K: int = 4) -> Tensor:
-    """exp of X in su(3) by Cayley-Hamilton in Newton form; Taylor series for small norm.
-
-    X: (..., 3, 3) complex128 anti-Hermitian -> (..., 3, 3). MATH_SPEC section 2.4.
-
-    Gradient guard (the only deviation from the reference lagmath.py): arccos(clamp(c0 / (2 s^3), -1, 1))
-    is evaluated by _arccos_clamped. Forward values, and all derivatives where |c0 / (2 s^3)| < 1, are the
-    reference's. Where |c0 / (2 s^3)| >= 1 (exactly degenerate eigenvalues after rounding) the first
-    derivative of the phi path is 0, its exact limit, so FIRST derivatives are exact and finite; the
-    reference gives NaN at exactly +-1 (arccos'(+-1) = inf times a zero upstream gradient). Second
-    derivatives there are NaN, as in the reference: Hessians at degenerate X are not supported (use
-    torch.linalg.matrix_exp for them).
+    The Cayley-Hamilton closed form in Newton form, without the clamp and the Taylor branch of the reference:
+    su3_exp only calls it where 1 - |c0 / (2 s^3)| > deg_tol and c1 >= taylor_cut.
     """
     I = torch.eye(3, dtype=C)
-    Q = -1j * X
     Q2 = Q @ Q
     c1 = Q2.diagonal(dim1=-2, dim2=-1).sum(-1).real / 2
-    small = c1 < taylor_cut
-    Qs = torch.where(small[..., None, None], torch.diag(torch.tensor([1.0, 0.0, -1.0], dtype=C)).expand_as(Q), Q)
-    Q2s = Qs @ Qs
-    c1s = Q2s.diagonal(dim1=-2, dim2=-1).sum(-1).real / 2
-    c0s = (Q2s @ Qs).diagonal(dim1=-2, dim2=-1).sum(-1).real / 3
-    s = torch.sqrt(c1s / 3)
-    ph = _arccos_clamped(c0s / (2 * s ** 3)) / 3                   # arccos(clamp(., -1, 1)) / 3; see _ArccosClamped
+    c0 = (Q2 @ Q).diagonal(dim1=-2, dim2=-1).sum(-1).real / 3
+    s = torch.sqrt(c1 / 3)
+    ph = torch.arccos(c0 / (2 * s ** 3)) / 3
     lam = [2 * s * torch.cos(ph - 2 * math.pi * k / 3) for k in range(3)]       # lam0 >= lam1 >= lam2, lam0-lam2 >= 3s
     dd = lambda p, q: 1j * torch.exp(0.5j * (p + q)) * torch.sinc((q - p) / (2 * math.pi))   # f[p,q], f = exp(i.)
     h0 = torch.exp(1j * lam[0])
     h1 = dd(lam[0], lam[1])
     h2 = (dd(lam[1], lam[2]) - h1) / (lam[2] - lam[0])
-    A0 = Qs - lam[0][..., None, None] * I
-    A1 = Qs - lam[1][..., None, None] * I
-    closed = h0[..., None, None] * I + h1[..., None, None] * A0 + h2[..., None, None] * A0 @ A1
-    Xs = torch.where(small[..., None, None], X, torch.zeros_like(X))
-    tay = I.expand_as(X).clone()
-    term = I.expand_as(X)
-    for k in range(1, K + 1):
-        term = term @ Xs / k
-        tay = tay + term
-    return torch.where(small[..., None, None], tay, closed)
+    A0 = Q - lam[0][..., None, None] * I
+    A1 = Q - lam[1][..., None, None] * I
+    return h0[..., None, None] * I + h1[..., None, None] * A0 + h2[..., None, None] * A0 @ A1
+
+
+def su3_exp(X: Tensor, deg_tol: float = 1e-6, taylor_cut: float = 1e-12) -> Tensor:
+    """exp of X in su(3): closed form on generic elements, torch.linalg.matrix_exp on the rare others.
+
+    X: (..., 3, 3) complex128 anti-Hermitian -> (..., 3, 3). MATH_SPEC section 2.4. Finite derivatives of
+    every order.
+
+    Deviation from the reference lagmath.py (the reviewed "fallback patch", applied with the user's approval):
+    elements with c1 < taylor_cut (near zero) or 1 - |c0 / (2 s^3)| <= deg_tol (relative eigenvalue gap below
+    about 1.6e-3 for deg_tol = 1e-6) go to torch.linalg.matrix_exp, which is smooth to every order; the routing
+    mask is computed without gradient. Generic elements use the closed form with the reference's arithmetic.
+    The reference's Taylor branch and clamp are no longer used, so first and second derivatives are finite
+    and accurate at exactly degenerate X (e.g. any multiple of T_8) and at X = 0.
+    Caveat: the routing is data-dependent control flow, so torch.func.vmap cannot wrap this function and
+    torch.compile traces it with a graph break.
+    """
+    shape = X.shape
+    Xf = X.reshape(-1, 3, 3)
+    with torch.no_grad():
+        Q = -1j * Xf
+        Q2 = Q @ Q
+        c1 = Q2.diagonal(dim1=-2, dim2=-1).sum(-1).real / 2
+        c0 = (Q2 @ Q).diagonal(dim1=-2, dim2=-1).sum(-1).real / 3
+        ok = c1 >= taylor_cut
+        x = c0 / (2 * (torch.where(ok, c1, torch.ones_like(c1)) / 3) ** 1.5)
+        generic = ok & ((1 - x.abs()) > deg_tol)
+    if bool(generic.all()):
+        return _su3_closed(-1j * Xf).reshape(shape)
+    out = torch.empty_like(Xf)
+    if bool(generic.any()):
+        out[generic] = _su3_closed(-1j * Xf[generic])
+    out[~generic] = torch.linalg.matrix_exp(Xf[~generic])
+    return out.reshape(shape)
+
+
 def exp_vjp_normal(X: Tensor, Ebar: Tensor) -> Tensor:
     """PyTorch-convention gradient of E = exp(X) for anti-Hermitian X (Daleckii-Krein); finite at degeneracy.
 
