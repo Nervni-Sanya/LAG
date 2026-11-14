@@ -5,6 +5,8 @@ log-determinants of Lie-group steps, equivariant connection heads, Lie-group int
 and a generic `MatrixLieGroup` core into which any matrix Lie group can be plugged. Every formula is
 specified in [MATH_SPEC.md](MATH_SPEC.md) and checked numerically by the test suite. Items the spec marks as
 not verified, such as the completeness of the heads and the SE(3) invertibility bound, remain open.
+[MATH_SPEC_LATTICE.md](MATH_SPEC_LATTICE.md) specifies the next stage, multi-link lattice gauge layers. That
+stage is not built yet (see Status).
 
 Requirements: Python ≥ 3.10, PyTorch ≥ 2.0 (developed with 2.11). Computations are float64 / complex128 on
 the CPU. float32 and GPU use are not supported yet (MATH_SPEC.md §9, item 6).
@@ -21,11 +23,20 @@ the CPU. float32 and GPU use are not supported yet (MATH_SPEC.md §9, item 6).
 | `lag/groups/base.py` | §10, step 6 | `MatrixLieGroup` (generic core), `LieGroupLike`, `ExpFn` |
 | `lag/groups/builtin.py` | §2 | `SO3`, `SU2`, `SU3`, `SE3`, with the closed forms wired in as backends |
 | `tests/test_math_spec.py` | §8 | the 47 acceptance checks |
-| `tests/test_groups.py`, `test_heads.py`, `test_exp.py` | | generic core, custom groups, flows, heads, exp |
+| `tests/test_groups.py`, `test_heads.py`, `test_exp.py`, `test_example_smoke.py` | | generic core, custom groups, flows, heads, exp; smoke test of the example |
+| `examples/su3_single_variable_flow.py` | §7 | the end-to-end SU(3) flow (acceptance run) |
 
 MATH_SPEC.md refers to two files that are not in this repository:
 - `lagmath.py` is now the `lag` package, with the same function names.
 - `verify_math_spec.py` is now `tests/test_math_spec.py`.
+
+MATH_SPEC_LATTICE.md also refers to files that are not in this repository yet:
+- its reference implementation, `laglattice.py`;
+- its verification script, `verify_lattice.py` (64 results, 0 failures);
+- the end-to-end run, `lattice_flow_2d.py`;
+- the records that `fill_spec_lattice.py` generates the spec from.
+
+Its §11 maps them onto `lag/lattice/`, `tests/test_lattice.py` and `examples/lattice_flow_2d.py`.
 
 All public names are also re-exported from `lag`.
 
@@ -153,4 +164,8 @@ Build order (MATH_SPEC.md §10):
   numbers are identical on torch 2.11 and 2.14.1, before and after the `su3_exp` fallback. The default suite
   runs only `tests/test_example_smoke.py`; set `LAG_FULL_FLOW=1` to include the full run.
 
-The open items of §9 are unchanged.
+The open items of MATH_SPEC.md §9 are unchanged except item 2. Masking patterns and the total log-determinant of
+multi-link lattice layers are now specified and verified in MATH_SPEC_LATTICE.md.
+
+The next stage, the `lag.lattice` package, follows the build order of MATH_SPEC_LATTICE.md §11 and has not been
+started.
