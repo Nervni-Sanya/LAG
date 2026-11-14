@@ -7,6 +7,7 @@ Modules (MATH_SPEC.md section in brackets):
   lag.heads     equivariant connection heads                            [4]
   lag.flows     Lie-Euler and RKMK4 steps                               [3.2, 3.3]
   lag.groups    generic MatrixLieGroup core + SO3, SU2, SU3, SE3        [10, step 6]
+  lag.lattice   multi-link lattice gauge layers (MATH_SPEC_LATTICE.md); its names stay in lag.lattice
 """
 from lag.algebra import C, T2, T3, proj_su, se3_ad, se3_hat, se3_vee_first_order, so3_hat, so3_vee, su_hat, su_vee
 from lag.exp import dexpL_generic, dexpL_se3, dexpL_so3, exp_vjp_normal, se3_exp, so3_exp, su2_exp, su3_exp
@@ -14,6 +15,7 @@ from lag.jacobian import logabsdet_step
 from lag.heads import cross_dual_su3, eps_dual_su2, head_adjoint, head_fundamental, head_loops, wedge_connection
 from lag.flows import lie_euler, rkmk4
 from lag.groups import SE3, SO3, SU2, SU3, ExpFn, LieGroupLike, MatrixLieGroup
+from lag import lattice
 
 __version__ = "0.1.0"
 
@@ -30,4 +32,6 @@ __all__ = [
     "lie_euler", "rkmk4",
     # groups
     "MatrixLieGroup", "LieGroupLike", "ExpFn", "SO3", "SU2", "SU3", "SE3",
+    # subpackage
+    "lattice",
 ]

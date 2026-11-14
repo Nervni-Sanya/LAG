@@ -5,3 +5,4 @@ __pycache__/
 build/
 dist/
 verify_results.json
+verify_lattice_results.json

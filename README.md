@@ -5,8 +5,9 @@ log-determinants of Lie-group steps, equivariant connection heads, Lie-group int
 and a generic `MatrixLieGroup` core into which any matrix Lie group can be plugged. Every formula is
 specified in [MATH_SPEC.md](MATH_SPEC.md) and checked numerically by the test suite. Items the spec marks as
 not verified, such as the completeness of the heads and the SE(3) invertibility bound, remain open.
-[MATH_SPEC_LATTICE.md](MATH_SPEC_LATTICE.md) specifies the next stage, multi-link lattice gauge layers. That
-stage is not built yet (see Status).
+[MATH_SPEC_LATTICE.md](MATH_SPEC_LATTICE.md) specifies multi-link lattice gauge layers: masks, the total
+log-determinant of a masked sub-layer, its inverse and an exact 2D reference. They are built as the
+`lag.lattice` package (see Status).
 
 Requirements: Python ≥ 3.10, PyTorch ≥ 2.0 (developed with 2.11). Computations are float64 / complex128 on
 the CPU. float32 and GPU use are not supported yet (MATH_SPEC.md §9, item 6).
@@ -26,19 +27,32 @@ the CPU. float32 and GPU use are not supported yet (MATH_SPEC.md §9, item 6).
 | `tests/test_groups.py`, `test_heads.py`, `test_exp.py`, `test_example_smoke.py` | | generic core, custom groups, flows, heads, exp; smoke test of the example |
 | `examples/su3_single_variable_flow.py` | §7 | the end-to-end SU(3) flow (acceptance run) |
 
+The lattice stage, in the build order of MATH_SPEC_LATTICE.md §11:
+
+| Module | MATH_SPEC_LATTICE | Contents |
+|---|---|---|
+| `lag/lattice/field.py` | §1, §3.1 | field layout, `GaugeGroup`, `haar`, `shift`, `staples`, `head`, `gauge_transform`, `plaquettes`, `wilson_action`, `CoeffFn` |
+| `lag/lattice/masks.py` | §3.2–3.3 | `mask` (even L only), `validate_mask` |
+| `lag/lattice/layers.py` | §2, §6 | `masked_layer` (batched Dv, `create_graph` flag), `invert_masked_layer` |
+| `lag/lattice/spectral.py` | §5 | `logdet_spectral` |
+| `lag/lattice/exact.py` | §7 | `exact_logZ_2d`; the Bessel forms `bessel_i`, `su2_coefficient_bessel`, `exact_logZ_2d_su2_bessel`, `su3_trivial_coefficient_bessel` |
+| `examples/lattice_flow_2d.py` | §8 | the end-to-end 2D SU(2) and SU(3) flows with their acceptance checks |
+| `tests/test_lattice.py` | §9 | the 64 acceptance checks |
+| `tests/test_lattice_api.py`, `test_lattice_flow_smoke.py` | | even-L check, inverse, Bessel forms, exports; smoke test of the lattice example |
+
 MATH_SPEC.md refers to two files that are not in this repository:
 - `lagmath.py` is now the `lag` package, with the same function names.
 - `verify_math_spec.py` is now `tests/test_math_spec.py`.
 
-MATH_SPEC_LATTICE.md also refers to files that are not in this repository yet:
-- its reference implementation, `laglattice.py`;
-- its verification script, `verify_lattice.py` (64 results, 0 failures);
-- the end-to-end run, `lattice_flow_2d.py`;
-- the records that `fill_spec_lattice.py` generates the spec from.
+MATH_SPEC_LATTICE.md also refers to files that are not in this repository:
+- `laglattice.py` is now `lag.lattice`, with the same function names.
+- `verify_lattice.py` is now `tests/test_lattice.py`.
+- `lattice_flow_2d.py` and `eval_saved.py` are now `examples/lattice_flow_2d.py`.
+- The records that `fill_spec_lattice.py` generates the spec from, and the trained §8 models, stay outside the
+  repository.
 
-Its §11 maps them onto `lag/lattice/`, `tests/test_lattice.py` and `examples/lattice_flow_2d.py`.
-
-All public names are also re-exported from `lag`.
+All public names of the modules in the first table are also re-exported from `lag`. The lattice names stay in
+`lag.lattice`, which `import lag` loads.
 
 ## Plugging in a group
 
@@ -105,6 +119,15 @@ it writes `verify_results.json` to the current directory, like the original:
 python tests/test_math_spec.py
 ```
 
+`tests/test_lattice.py` is the acceptance suite ported from `verify_lattice.py`. It has one pytest item per
+recorded result (64), with the same seeds. The tolerances are pinned together with their direction: negative
+controls are lower bounds. Run as a script, it writes `verify_lattice_results.json` to the current directory and
+exits with status 1 if a check fails, like the original:
+
+```bash
+python tests/test_lattice.py
+```
+
 ## Differences from the reference implementation
 
 ### `su3_exp`: `matrix_exp` fallback near degeneracy and zero
@@ -152,6 +175,60 @@ The four results that the original script only recorded now assert the qualitati
 - §3.5: no folding for the small field, folding for the large one;
 - §4.2: the d-type covariant vanishes for SU(2) but not for SU(3).
 
+### `lag.lattice` (from `laglattice.py`)
+
+With docstrings and annotations stripped, the AST of every function and class of `laglattice.py` is identical
+to its counterpart in `lag.lattice`, with one exception, `mask`. The differences:
+- `mask` raises `ValueError` for odd L, the even-L assertion that MATH_SPEC_LATTICE.md §11 asks for. On an odd
+  torus the transverse parity wraps around, the active set is not independent, and the log-determinant is
+  silently wrong (the odd-L negative controls of §9). Without the check, `mask` is the reference function.
+  Callers that need the parity set anyway pass it through `active`.
+- `invert_masked_layer` is the fixed-point iteration of §6. It is moved out of `sec_inverse` of
+  `verify_lattice.py` with the same arithmetic. Its loop is AST-identical to the original's once `cf`, `1e-14`
+  and `200` are renamed `coeff`, `tol` and `max_iter`. It returns the input field, the number of iterations and
+  the last change, which exceeds `tol` only if `max_iter` was reached.
+- The Bessel forms of §7 are new code. The context files record their checks (`exact_bessel_checks.json`) but
+  not their implementation, so they are written from the §7 formulas, with I_n from its power series. At the 12
+  recorded points they agree with `exact_logZ_2d` to 3.7e-14 (recorded: 3.8e-14), and `bessel_i` agrees with
+  `scipy.special.iv` to 1.8e-15 (relative, n < 40, x ≤ 30).
+- `head`, the loop head summed over the loops of a link, lives in `field.py` rather than `layers.py`, because
+  `validate_mask` needs it too. It differs from `lag.heads.head_loops`, which does not sum.
+- As in the reference, `GaugeGroup(N)` builds SU(2) for N = 2 and SU(3) for any other N, so only N = 2 and 3
+  are meaningful.
+
+### Lattice test port
+
+`tests/test_lattice.py` keeps the section functions of `verify_lattice.py`. Their AST differs only where the
+library changed:
+- the two odd-L negative controls pass the parity set through `active`;
+- `sec_inverse` calls `invert_masked_layer`;
+- `check()` also records the tolerance.
+
+The 11 results that the original only records assert the qualitative claims of MATH_SPEC_LATTICE.md:
+- §3.2: a full sweep changes every link.
+- §6: the inverse converges before its cap of 200 iterations, with max ‖Dω‖₂ < 1.
+- §7: the Monte Carlo triples are finite with positive errors, and the trivial-representation-only log Z of the
+  2×2 tori lies below the exact value.
+- §4: the volume table has the expected shape.
+
+Fidelity, on torch 2.11: `python tests/test_lattice.py` and a fresh run of the original `verify_lattice.py`
+give the same 62 non-timing values bit for bit. Against the recorded file (torch 2.14.1), 34 of them differ at
+round-off, by at most 1.1e-13. The fresh run of the original differs in the same 34 values.
+
+### Lattice example (from `lattice_flow_2d.py` and `eval_saved.py`)
+
+The AST of `Coeff`, `Flow`, `evaluate` and the training loop is identical to `lattice_flow_2d.py`.
+`evaluate_snis` is the per-L loop body of `eval_saved.py`. The seeds are the same: training draws from
+`--seed`, and the two evaluation sets from 1000 + L and 5000 + L. A 30-step run of both reference scripts and
+the same run of the example give identical training histories and evaluations, bit for bit, for SU(2) and
+SU(3). What is new:
+- the acceptance checks of §8. "Reverse KL ≥ 0 within noise" means at least −3 standard errors of mean log w.
+  The reweighted plaquette is checked on set 2, which has the self-normalised importance-sampling error.
+- `--load`, which evaluates a saved model and replaces `eval_saved.py`;
+- the per-group defaults (β and the number of steps of the §8 runs);
+- `--out`: files are written only on request;
+- `run()` restores the default dtype and the thread count when it returns.
+
 ## Status
 
 Build order (MATH_SPEC.md §10):
@@ -167,5 +244,23 @@ Build order (MATH_SPEC.md §10):
 The open items of MATH_SPEC.md §9 are unchanged except item 2. Masking patterns and the total log-determinant of
 multi-link lattice layers are now specified and verified in MATH_SPEC_LATTICE.md.
 
-The next stage, the `lag.lattice` package, follows the build order of MATH_SPEC_LATTICE.md §11 and has not been
-started.
+Build order of MATH_SPEC_LATTICE.md §11: steps 1–7 are done.
+- Steps 1–5 are the `lag.lattice` package.
+- Step 7 is `tests/test_lattice.py`, which passes all 64 checks. `tests/test_lattice_api.py` covers what the
+  port does not reach:
+  - the even-L check;
+  - `invert_masked_layer` against the loop it replaces;
+  - the Bessel forms against `exact_logZ_2d`.
+- Step 6 is `examples/lattice_flow_2d.py`, the §8 run (`python examples/lattice_flow_2d.py --N 3`, or `--N 2`).
+  Training was run only briefly here; its first step reproduces the recorded §8 KL exactly. The trained models
+  of the §8 runs were evaluated with `--load`. Both pass every acceptance check. Both evaluation sets reproduce
+  the §8 tables, within 1e-12 relative of the recorded values (torch 2.11 against 2.14.1). The ESS thresholds
+  come from single-seed runs; §8 asks for a second seed before pinning them, and that has not been run.
+- Cost of a full run on 6 CPU threads. §8 reports 1705 s of training for SU(3) and 833 s for SU(2); the two
+  evaluation sets add about 21 and 7 minutes. On the development machine (torch 2.11), a training step at
+  batch 256 takes 3.3 s for SU(3) and 1.0 s for SU(2): about 17 and 7 minutes for the §8 step counts. Evaluation
+  took about 25 and 4 minutes there.
+- The default suite runs only `tests/test_lattice_flow_smoke.py`. Set `LAG_FULL_LATTICE_FLOW=1` to include both
+  full runs.
+
+The open items of MATH_SPEC_LATTICE.md §10 are unchanged.
